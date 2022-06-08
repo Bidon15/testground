@@ -27,6 +27,7 @@ func panickingTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 }
 
 func stall(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
+	runenv.RecordMessage("Now stalling for 24 hours")
 	time.Sleep(24 * time.Hour)
 	return nil
 }
