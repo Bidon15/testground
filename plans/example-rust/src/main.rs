@@ -4,6 +4,7 @@ const LISTENING_PORT: u16 = 1234;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("TODO: why is this necessary to make the test go green?");
     let (client, _run_parameters) = testground::client::Client::new().await?;
 
     let local_addr = &if_addrs::get_if_addrs()
