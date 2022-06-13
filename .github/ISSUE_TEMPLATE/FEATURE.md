@@ -13,7 +13,7 @@ assignees: ''
 
 ## What defines this endeavour to be complete?
 
-<!--Create a check list of what you expect to see as part of delivering on the ask--
+<!--Create a check list of what you expect to see as part of delivering on the ask-->
 
 - [ ] Item 1
 - [ ] Item 2
