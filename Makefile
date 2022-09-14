@@ -14,7 +14,7 @@ goinstall:
 	go install -ldflags "-X github.com/testground/testground/pkg/version.GitCommit=`git rev-list -1 HEAD`" .
 
 sync-install:
-	docker pull iptestground/sync-service:latest
+	docker pull iptestground/sync-service:edge
 
 pre-commit:
 	python -m pip install pre-commit --upgrade --user
@@ -45,11 +45,16 @@ test-go:
 	testground plan import --from ./plans/example
 	$(call eachmod,go test -p 1 -v $(GOTFLAGS) ./...)
 
-test-integration: test-integ-cluster-k8s test-integ-local-docker test-integ-local-exec
+test-integration: test-integ-cluster-k8s test-integ-local-exec test-integ-local-docker test-integ-examples
 
+# Note that in these tests, we override the SYNC_SERVICE env var,
+# so that testground connects to the instance exposed with `make kind-cluster`
 test-integ-cluster-k8s:
-	./integration_tests/01_k8s_kind_placebo_ok.sh
-	./integration_tests/02_k8s_kind_placebo_stall.sh
+	SYNC_SERVICE_HOST=localhost ./integration_tests/01_k8s_kind_placebo_ok.sh
+	SYNC_SERVICE_HOST=localhost ./integration_tests/02_k8s_kind_placebo_stall.sh
+
+test-integ-local-exec:
+	./integration_tests/03_exec_go_placebo_ok.sh
 
 test-integ-local-docker:
 	./integration_tests/04_docker_placebo_ok.sh
@@ -60,12 +65,17 @@ test-integ-local-docker:
 	./integration_tests/09_docker_splitbrain_accept.sh
 	./integration_tests/10_docker_splitbrain_reject.sh
 	./integration_tests/11_docker_splitbrain_drop.sh
-	./integration_tests/12_docker_example-js_pingpong.sh
 	./integration_tests/13_docker_builder_configuration.sh
 	./integration_tests/13_02_docker_builder_configuration.sh
+	./integration_tests/14_docker_silent_test_failure.sh
+	./integration_tests/15_docker_mixed_builders_configuration.sh
+	./integration_tests/15_02_docker_mixed_builders_and_custom_go_deps.sh
+	./integration_tests/16_show_task_outcome_in_cli.sh
 
-test-integ-local-exec:
-	./integration_tests/03_exec_go_placebo_ok.sh
+test-integ-examples:
+	./integration_tests/example_01_rust.sh
+	./integration_tests/example_02_js_pingpong.sh
+	./integration_tests/example_03_generic_artifact.sh
 
 kind-cluster:
 	kind create cluster --wait 90s
@@ -75,5 +85,8 @@ kind-cluster:
 	kubectl label nodes kind-control-plane testground.node.role.infra=true
 	kind load docker-image iptestground/sidecar:edge
 	kubectl apply -f .circleci/sidecar.yaml
-	kind load docker-image iptestground/sync-service:latest
+
+	kind load docker-image iptestground/sync-service:edge
 	kubectl apply -f .circleci/sync-service.yaml
+	kubectl expose deployment/testground-sync-service
+	kubectl port-forward deployment/testground-sync-service 5050:5050 &

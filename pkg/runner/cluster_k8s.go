@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -136,26 +137,9 @@ type ClusterK8sRunner struct {
 	syncClient  *ss.DefaultClient
 }
 
-type Result struct {
-	Outcome  task.Outcome             `json:"outcome"`
-	Outcomes map[string]*GroupOutcome `json:"outcomes"`
-	Journal  *Journal                 `json:"journal"`
-}
-
 type Journal struct {
 	Events       map[string]string   `json:"events"`
 	PodsStatuses map[string]struct{} `json:"pods_statuses"`
-}
-
-func newResult() *Result {
-	return &Result{
-		Outcome:  task.OutcomeUnknown,
-		Outcomes: make(map[string]*GroupOutcome),
-		Journal: &Journal{
-			Events:       make(map[string]string),
-			PodsStatuses: make(map[string]struct{}),
-		},
-	}
 }
 
 func (r *Result) String() string {
@@ -201,7 +185,7 @@ func (c *ClusterK8sRunner) Run(ctx context.Context, input *api.RunInput, ow *rpc
 		return nil, fmt.Errorf("could not init pool: %w", err)
 	}
 
-	result := newResult()
+	result := newResult(input)
 	runoutput = &api.RunOutput{
 		RunID:  input.RunID,
 		Result: result,
@@ -270,9 +254,9 @@ func (c *ClusterK8sRunner) Run(ctx context.Context, input *api.RunInput, ow *rpc
 
 	if !enoughResources {
 		if cfg.AutoscalerEnabled {
-			ow.Warnw("too many test instances requested, will have to wait for cluster autoscaler to kick in.")
+			ow.Warnw("too many test instances requested, will have to wait for cluster autoscaler to kick in")
 		} else {
-			runerr = errors.New("too many test instances requested, resize cluster if you need more capacity.")
+			runerr = errors.New("too many test instances requested, resize cluster if you need more capacity")
 			return
 		}
 	}
@@ -317,7 +301,7 @@ func (c *ClusterK8sRunner) Run(ctx context.Context, input *api.RunInput, ow *rpc
 
 		env := conv.ToEnvVar(runenv.ToEnvVars())
 		env = append(env, v1.EnvVar{Name: "REDIS_HOST", Value: "testground-infra-redis-headless"})
-		env = append(env, v1.EnvVar{Name: "SYNC_SERVICE_HOST", Value: "testground-sync-service-headless"})
+		env = append(env, v1.EnvVar{Name: "SYNC_SERVICE_HOST", Value: "testground-sync-service"})
 		env = append(env, v1.EnvVar{Name: "INFLUXDB_URL", Value: "http://influxdb:8086"})
 
 		// Set the log level if provided in cfg.
@@ -700,6 +684,7 @@ func (c *ClusterK8sRunner) getPodLogs(ow *rpc.OutputWriter, podName string) (str
 	lr.MapString(func(line string) string { return podName + " | " + line })
 
 	buf := &bytes.Buffer{}
+	buf.Grow(math.MaxInt)
 	_, err = io.Copy(buf, lr)
 	if err != nil {
 		return "", fmt.Errorf("error in copy information from podLogs to buf: %v", err)
@@ -733,9 +718,9 @@ func (c *ClusterK8sRunner) watchRunPods(ctx context.Context, ow *rpc.OutputWrite
 
 	go func() {
 		for ge := range eventsChan {
-			e := ge.Object.(*v1.Event)
+			e, ok := ge.Object.(*v1.Event)
 
-			if strings.Contains(e.InvolvedObject.Name, input.RunID) {
+			if ok && strings.Contains(e.InvolvedObject.Name, input.RunID) {
 				id := e.ObjectMeta.Name
 
 				event := fmt.Sprintf("obj<%s> type<%s> reason<%s> message<%s> type<%s> count<%d> lastTimestamp<%s>", e.InvolvedObject.Name, ge.Type, e.Reason, e.Message, e.Type, e.Count, e.LastTimestamp)

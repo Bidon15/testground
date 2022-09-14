@@ -202,8 +202,8 @@ func (e *Engine) QueueBuild(request *api.BuildRequest, sources *api.UnpackedSour
 
 func (e *Engine) QueueRun(request *api.RunRequest, sources *api.UnpackedSources) (string, error) {
 	var (
-		builder = request.Composition.Global.Builder
-		runner  = request.Composition.Global.Runner
+		builders = request.Composition.ListBuilders()
+		runner   = request.Composition.Global.Runner
 	)
 
 	// Get the runner.
@@ -212,13 +212,16 @@ func (e *Engine) QueueRun(request *api.RunRequest, sources *api.UnpackedSources)
 		return "", fmt.Errorf("unknown runner: %s", runner)
 	}
 
-	// Check if builder and runner are compatible
-	if !stringInSlice(builder, run.CompatibleBuilders()) {
-		return "", fmt.Errorf("runner %s is incompatible with builder %s", runner, builder)
+	// Check if builders and runner are compatible
+	for _, builder := range builders {
+		if !stringInSlice(builder, run.CompatibleBuilders()) {
+			return "", fmt.Errorf("runner %s is incompatible with builder %s", runner, builder)
+		}
 	}
 
 	id := xid.New().String()
-	err := e.queue.Push(&task.Task{
+	cby := task.CreatedBy(request.CreatedBy)
+	newTask := &task.Task{
 		Version:     0,
 		Priority:    request.Priority,
 		Plan:        request.Composition.Global.Plan,
@@ -237,8 +240,10 @@ func (e *Engine) QueueRun(request *api.RunRequest, sources *api.UnpackedSources)
 				Created: time.Now().UTC(),
 			},
 		},
-		CreatedBy: task.CreatedBy(request.CreatedBy),
-	})
+		CreatedBy: cby,
+	}
+
+	err := e.queue.PushUniqueByBranch(newTask)
 
 	return id, err
 }

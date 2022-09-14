@@ -60,6 +60,9 @@ type DockerGoBuilderConfig struct {
 	ExecPkg    string `toml:"exec_pkg"`
 	FreshGomod bool   `toml:"fresh_gomod"`
 
+	// Custom base path where we find the test source
+	Path string `toml:"path" default:"./"`
+
 	// Custom modfile
 	Modfile string `toml:"modfile"`
 
@@ -130,9 +133,9 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	cliopts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
 
 	var (
-		basesrc = in.UnpackedSources.BaseDir
-		plansrc = in.UnpackedSources.PlanDir
-		sdksrc  = in.UnpackedSources.SDKDir
+		baseSrc = in.UnpackedSources.BaseDir
+		planDir = in.UnpackedSources.PlanDir
+		sdkSrc  = in.UnpackedSources.SDKDir
 
 		cli, err = client.NewClientWithOpts(cliopts...)
 	)
@@ -140,6 +143,8 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	if err != nil {
 		return nil, err
 	}
+
+	planSrc := filepath.Join(planDir, cfg.Path)
 
 	// Set up the go proxy wiring. This will start a goproxy container if
 	// necessary, attaching it to the testground-build network.
@@ -149,7 +154,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	}
 
 	// Write the Dockerfile.
-	dockerfileDst := filepath.Join(basesrc, "Dockerfile")
+	dockerfileDst := filepath.Join(baseSrc, "Dockerfile")
 	f, err := os.Create(dockerfileDst)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Dockerfile at %s: %w", dockerfileDst, err)
@@ -161,7 +166,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	}
 
 	vars := &DockerfileTemplateVars{
-		WithSDK:              sdksrc != "",
+		WithSDK:              sdkSrc != "",
 		RuntimeImage:         cfg.RuntimeImage,
 		DockerfileExtensions: cfg.DockerfileExtensions,
 		SkipRuntimeImage:     cfg.SkipRuntimeImage,
@@ -178,9 +183,8 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 
 	if cfg.Modfile != "" {
 		if cfg.FreshGomod {
-			return nil, fmt.Errorf("fresh_gomod option is not supported when a custom modfile is used.")
+			return nil, fmt.Errorf("fresh_gomod option is not supported when a custom modfile is used")
 		}
-
 		modfile = cfg.Modfile
 
 		modfileName := strings.TrimSuffix(cfg.Modfile, filepath.Ext(cfg.Modfile))
@@ -188,8 +192,12 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	}
 
 	if cfg.FreshGomod {
+		if cfg.Path != "" {
+			return nil, fmt.Errorf("custom path option is not supported when a fresh go mod is requested")
+		}
+
 		for _, f := range []string{"go.mod", "go.sum"} {
-			file := filepath.Join(plansrc, f)
+			file := filepath.Join(planSrc, f)
 			if _, err := os.Stat(file); !os.IsNotExist(err) {
 				if err := os.Remove(file); err != nil {
 					return nil, fmt.Errorf("cleanup failed; %w", err)
@@ -199,7 +207,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 
 		// Initialize a fresh go.mod file.
 		cmd := exec.CommandContext(ctx, "go", "mod", "init", cfg.ModulePath)
-		cmd.Dir = plansrc
+		cmd.Dir = planSrc
 		out, _ := cmd.CombinedOutput()
 		if !strings.Contains(string(out), "creating new go.mod") {
 			return nil, fmt.Errorf("unable to create go.mod; %s", out)
@@ -221,7 +229,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	}
 
 	// Inject replace directives for the SDK modules.
-	if sdksrc != "" {
+	if sdkSrc != "" {
 		replaces = append(replaces, "-replace=github.com/testground/sdk-go=../sdk")
 	}
 
@@ -232,7 +240,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 		}
 
 		cmd := exec.CommandContext(ctx, "go", append([]string{"mod", "edit"}, replaces...)...)
-		cmd.Dir = plansrc
+		cmd.Dir = planSrc
 		if err = cmd.Run(); err != nil {
 			out, _ := cmd.CombinedOutput()
 			return nil, fmt.Errorf("unable to add replace directives to go.mod; %w; output: %s", err, string(out))
@@ -244,6 +252,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 		"GO_PROXY":    &proxyURL,
 		"MODFILE":     &modfile,
 		"MODFILE_SUM": &modfileSum,
+		"PLAN_PATH":   &cfg.Path,
 	}
 
 	if cfg.ExecPkg != "" {
@@ -257,8 +266,12 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	baseImage := cfg.BuildBaseImage
 	alreadyCached := false
 
+	if cfg.EnableGoBuildCache && baseImage != DefaultGoBuildBaseImage {
+		return nil, fmt.Errorf("unable to use go build cache with a custom build image")
+	}
+
 	if cfg.EnableGoBuildCache {
-		alreadyCached, err = b.resolveBuildCacheImage(ctx, cli, cfg, ow, cacheImage)
+		alreadyCached, err = b.hasBuildCacheImage(ctx, cli, cfg, ow, cacheImage)
 		if err != nil {
 			return nil, err
 		}
@@ -289,7 +302,7 @@ func (b *DockerGoBuilder) Build(ctx context.Context, in *api.BuildInput, ow *rpc
 	}
 
 	imageOpts := docker.BuildImageOpts{
-		BuildCtx:  basesrc,
+		BuildCtx:  baseSrc,
 		BuildOpts: &opts,
 	}
 
@@ -466,10 +479,9 @@ func (b *DockerGoBuilder) setupGoProxy(ctx context.Context, ow *rpc.OutputWriter
 	return proxyURL, buildNetworkID, warn
 }
 
-// resolveBuildCacheImage resolves the image `cacheImage`.
-//	1. If the image exists, returns true and a nil-error.
-//	2. If the image does not exist, returns false and a nil-error.
-func (b *DockerGoBuilder) resolveBuildCacheImage(ctx context.Context, cli *client.Client, cfg *DockerGoBuilderConfig, ow *rpc.OutputWriter, cacheImage string) (bool, error) {
+// hasBuildCacheImage resolves the image `cacheImage`,
+// Return an error if the processus of finding the image had an error.
+func (b *DockerGoBuilder) hasBuildCacheImage(ctx context.Context, cli *client.Client, cfg *DockerGoBuilderConfig, ow *rpc.OutputWriter, cacheImage string) (bool, error) {
 	ow.Infow("go build cache enabled; checking if build cache image exists", "cache_image", cacheImage)
 	info, ok, err := docker.FindImage(ctx, ow, cli, cacheImage)
 	switch {
@@ -486,7 +498,6 @@ func (b *DockerGoBuilder) resolveBuildCacheImage(ctx context.Context, cli *clien
 }
 
 func (b *DockerGoBuilder) removeBuildCacheImage(ctx context.Context, cli *client.Client, cacheimage string) error {
-	// release the old tag first.
 	_, err := cli.ImageRemove(ctx, cacheimage, types.ImageRemoveOptions{Force: true})
 	if err != nil && !strings.Contains(err.Error(), "No such image") {
 		return fmt.Errorf("failed to untag build cache image with name: %w", err)
@@ -576,8 +587,11 @@ ARG RUNTIME_IMAGE=busybox:1.31.1-glibc
 #:::
 FROM ${BUILD_BASE_IMAGE} AS builder
 
+# PLAN_PATH is the path of our test's source code.
+ARG PLAN_PATH
+
 # PLAN_DIR is the location containing the plan source inside the container.
-ENV PLAN_DIR /plan
+ENV PLAN_DIR /plan/${PLAN_PATH}
 
 # SDK_DIR is the location containing the (optional) sdk source inside the container.
 ENV SDK_DIR /sdk
@@ -609,8 +623,8 @@ ARG MODFILE_SUM="go.sum"
 
 # Copy only go.mod files and download deps, in order to leverage Docker caching.
 # Note: we copy into the go.mod file, because using the -modfile option doesn't work consistently accross all the CLI
-COPY /plan/${MODFILE} ${PLAN_DIR}/go.mod
-COPY /plan/${MODFILE_SUM} ${PLAN_DIR}/go.sum
+COPY /plan/${PLAN_PATH}/${MODFILE} ${PLAN_DIR}/go.mod
+COPY /plan/${PLAN_PATH}/${MODFILE_SUM} ${PLAN_DIR}/go.sum
 
 {{if .WithSDK}}
 COPY /sdk/go.mod /sdk/go.mod
@@ -638,7 +652,7 @@ RUN cp /tmp/go.mod /tmp/go.sum ${PLAN_DIR}/
 
 RUN cd ${PLAN_DIR} \
     && go env -w GOPROXY="${GO_PROXY}" \
-    && CGO_ENABLED=${CgoEnabled} GOOS=linux GOARCH=amd64 go build -o ${PLAN_DIR}/testplan.bin ${BUILD_TAGS} ${TESTPLAN_EXEC_PKG}
+    && CGO_ENABLED=${CgoEnabled} GOOS=linux go build -o ${PLAN_DIR}/testplan.bin ${BUILD_TAGS} ${TESTPLAN_EXEC_PKG}
 
 {{.DockerfileExtensions.PostBuild}}
 
@@ -655,8 +669,11 @@ RUN cd ${PLAN_DIR} \
 ## The 'AS runtime' token is used to parse Docker stdout to extract the build image ID to cache.
 FROM ${RUNTIME_IMAGE} AS runtime
 
-# PLAN_DIR is the location containing the plan source inside the build container.
-ENV PLAN_DIR /plan
+# PLAN_PATH is the path of our test's source code.
+ARG PLAN_PATH
+
+# PLAN_DIR is the location containing the plan source inside the container.
+ENV PLAN_DIR /plan/${PLAN_PATH}
 
 {{.DockerfileExtensions.PreRuntimeCopy}}
 
@@ -670,8 +687,11 @@ COPY --from=builder ${PLAN_DIR}/testplan.bin /testplan
 ## The 'AS runtime' token is used to parse Docker stdout to extract the build image ID to cache.
 FROM builder AS runtime
 
-# PLAN_DIR is the location containing the plan source inside the build container.
-ENV PLAN_DIR /plan
+# PLAN_PATH is the path of our test's source code.
+ARG PLAN_PATH
+
+# PLAN_DIR is the location containing the plan source inside the container.
+ENV PLAN_DIR /plan/${PLAN_PATH}
 
 RUN mv ${PLAN_DIR}/testplan.bin /testplan
 

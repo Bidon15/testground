@@ -113,7 +113,9 @@ func (e *Engine) worker(n int) {
 			case task.TypeRun:
 				var res *api.RunOutput
 				res, errTask = e.doRun(ctx, tsk.ID, tsk.Input.(*RunInput), ow)
+
 				if errTask != nil {
+					errTask = &TaskExecutionError{TaskType: string(tsk.Type), WrappedErr: errTask}
 					logging.S().Errorw("doRun returned err", "err", errTask)
 				}
 
@@ -124,6 +126,7 @@ func (e *Engine) worker(n int) {
 				var res []*api.BuildOutput
 				res, errTask = e.doBuild(ctx, tsk.Input.(*BuildInput), ow)
 				if errTask != nil {
+					errTask = &TaskExecutionError{TaskType: string(tsk.Type), WrappedErr: errTask}
 					logging.S().Errorw("doBuild returned err", "err", errTask)
 				}
 
@@ -147,8 +150,12 @@ func (e *Engine) worker(n int) {
 			if errTask != nil {
 				tsk.Error = errTask.Error()
 
-				if errors.Is(errTask, context.Canceled) {
+				var e *TaskExecutionError
+				if errors.As(errTask, &e) || errors.Is(errTask, context.Canceled) {
 					newState.State = task.StateCanceled
+					logging.S().Errorw("task cancelled due to error", "err", errTask)
+				} else {
+					logging.S().Infow("Task encountered error, but was not canceled.")
 				}
 			}
 
@@ -291,6 +298,7 @@ func (e *Engine) postStatusToSlack(tsk *task.Task) error {
 func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputWriter) ([]*api.BuildOutput, error) {
 	sources := input.Sources
 	comp, err := input.Composition.PrepareForBuild(&input.Manifest)
+
 	if err != nil {
 		return nil, err
 	}
@@ -300,49 +308,45 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 	}
 
 	var (
-		plan    = clean(comp.Global.Plan)
-		builder = comp.Global.Builder
+		plan = clean(comp.Global.Plan)
 	)
 
-	// Find the builder.
-	bm, ok := e.builders[builder]
-	if !ok {
-		return nil, fmt.Errorf("unrecognized builder: %s", builder)
-	}
+	// Validate builders we use
+	usedBuilders := comp.ListBuilders()
 
-	// Call the healthcheck routine if the runner supports it, with fix=true.
-	if hc, ok := bm.(api.Healthchecker); ok {
-		ow.Info("performing healthcheck on builder")
+	for _, b := range usedBuilders {
+		_, ok := e.builders[b]
 
-		if rep, err := hc.Healthcheck(ctx, e, ow, true); err != nil {
-			return nil, fmt.Errorf("healthcheck and fix errored: %w", err)
-		} else if !rep.FixesSucceeded() {
-			return nil, fmt.Errorf("healthcheck fixes failed; aborting:\n%s", rep)
-		} else if !rep.ChecksSucceeded() {
-			ow.Warnf(aurora.Bold(aurora.Yellow("some healthchecks failed, but continuing")).String())
-		} else {
-			ow.Infof(aurora.Bold(aurora.Green("healthcheck: ok")).String())
+		if !ok {
+			return nil, fmt.Errorf("unrecognized builder: %s", b)
 		}
 	}
 
-	// This var compiles all configurations to coalesce.
-	//
-	// Precedence (highest to lowest):
-	//
-	//  1. CLI --run-param, --build-param flags.
-	//  2. .env.toml.
-	//  3. Builder defaults (applied by the builder itself, nothing to do here).
-	//
-	var cfg config.CoalescedConfig
+	// Call healthcheck on the builders
+	for _, b := range usedBuilders {
+		bm := e.builders[b]
 
-	// 2. Get the env config for the builder.
-	cfg = cfg.Append(e.envcfg.Builders[builder])
+		// Call the healthcheck routine if the runner supports it, with fix=true.
+		if hc, ok := bm.(api.Healthchecker); ok {
+			ow.Info("performing healthcheck on builder")
 
+			if rep, err := hc.Healthcheck(ctx, e, ow, true); err != nil {
+				return nil, fmt.Errorf("healthcheck and fix errored: %w", err)
+			} else if !rep.FixesSucceeded() {
+				return nil, fmt.Errorf("healthcheck fixes failed; aborting:\n%s", rep)
+			} else if !rep.ChecksSucceeded() {
+				ow.Warnf(aurora.Bold(aurora.Yellow("some healthchecks failed, but continuing")).String())
+			} else {
+				ow.Infof(aurora.Bold(aurora.Green("healthcheck: ok")).String())
+			}
+		}
+	}
+
+	// Builders are ready, let's go.
 	var (
 		// no need to synchronise access, as each goroutine will write its
 		// response in its index.
 		ress   = make([]*api.BuildOutput, len(comp.Groups))
-		errgrp = errgroup.Group{}
 		cancel context.CancelFunc
 	)
 
@@ -359,6 +363,7 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 		uniq[k] = append(uniq[k], idx)
 	}
 
+	// prepare sources
 	var finalSources []*api.UnpackedSources
 	if uniqcnt := len(uniq); uniqcnt == 1 {
 		finalSources = []*api.UnpackedSources{sources}
@@ -387,6 +392,14 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 	// Trigger a build job for each unique build, and wait until all of them are
 	// done, mapping the build artifacts back to the original group positions in
 	// the response.
+	errGroup, errGroupCtx := errgroup.WithContext(ctx)
+
+	concurrentBuilds := comp.Global.ConcurrentBuilds
+	if concurrentBuilds == 0 {
+		concurrentBuilds = -1
+	}
+	errGroup.SetLimit(concurrentBuilds)
+
 	var cnt int
 	for key, idxs := range uniq {
 		idxs := idxs
@@ -395,8 +408,9 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 		src := finalSources[cnt]
 		cnt++
 
-		errgrp.Go(func() (err error) {
-			// All groups are identical for the sake of building, so pick the first one.
+		errGroup.Go(func() (err error) {
+			// Every Group in `idxs`` have the same build key. They are identitical when it comes to build,
+			// so it's safe to use the first one to build them all.
 			grp := comp.Groups[idxs[0]]
 
 			// Pluck all IDs from the groups this build artifact is for.
@@ -404,6 +418,10 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 			for _, idx := range idxs {
 				grpids = append(grpids, comp.Groups[idx].ID)
 			}
+
+			// get the builder
+			builder := grp.Builder
+			bm := e.builders[builder]
 
 			ow.Infow("performing build for groups", "plan", plan, "groups", grpids, "builder", builder)
 
@@ -416,12 +434,21 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 				}
 			}
 
-			// Get overrides from the Global + Group.
-			cfg = cfg.Append(grp.BuildConfig)
+			// This var compiles all configurations to coalesce.
+			//
+			// Precedence (highest to lowest):
+			//
+			//  1. CLI --run-param, --build-param flags.
+			//  2. .env.toml.
+			//  3. Builder defaults (applied by the builder itself, nothing to do here).
+			//
+			var cfg config.CoalescedConfig
+			cfg = cfg.Append(e.envcfg.Builders[builder]) // env config for the builder
+			groupCfg := cfg.Append(grp.BuildConfig)      // add the group config
 
 			// Coalesce all configurations and deserialize into the config type
 			// mandated by the builder.
-			obj, err := cfg.CoalesceIntoType(bm.ConfigType())
+			obj, err := groupCfg.CoalesceIntoType(bm.ConfigType())
 
 			if err != nil {
 				return fmt.Errorf("error while coalescing configuration values: %w", err)
@@ -437,7 +464,7 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 				UnpackedSources: src,
 			}
 
-			res, err := bm.Build(ctx, in, ow)
+			res, err := bm.Build(errGroupCtx, in, ow)
 			if err != nil {
 				ow.Infow("build failed", "plan", plan, "groups", grpids, "builder", builder, "error", err)
 				return err
@@ -457,7 +484,7 @@ func (e *Engine) doBuild(ctx context.Context, input *BuildInput, ow *rpc.OutputW
 	}
 
 	// Wait until all goroutines are done. If any failed, return the error.
-	if err := errgrp.Wait(); err != nil {
+	if err := errGroup.Wait(); err != nil {
 		return nil, err
 	}
 
@@ -535,6 +562,11 @@ func (e *Engine) doRun(ctx context.Context, id string, input *RunInput, ow *rpc.
 
 	// 2. Get the env config for the runner.
 	cfg = cfg.Append(e.envcfg.Runners[trunner])
+
+	var flag = e.envcfg.Runners[trunner][config.RunnerDisabledFlag]
+	if flag == true {
+		return nil, runner.ErrRunnerDisabled
+	}
 
 	// 1. Get overrides from the composition.
 	cfg = cfg.Append(comp.Global.RunConfig)
