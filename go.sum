@@ -33,8 +33,6 @@ github.com/Azure/go-autorest/autorest/date v0.3.0/go.mod h1:BI0uouVdmngYNUzGWeSY
 github.com/Azure/go-autorest/autorest/mocks v0.4.1/go.mod h1:LTp+uSrOhSkaKrUy935gNZuuIPPVsHlr9DSOxSayd+k=
 github.com/Azure/go-autorest/logger v0.2.1/go.mod h1:T9E3cAhj2VqvPOtCYAvby9aBXkZmbF5NWuPV8+WeEW8=
 github.com/Azure/go-autorest/tracing v0.6.0/go.mod h1:+vhtPC754Xsa23ID7GlGsrdKBpUA79WCAKPPZVC2DeU=
-github.com/Bidon15/sync-service v0.0.0-20220914145500-b71b55d44765 h1:mK3zGVgQrAB/hYD6cIO29Xa1FaL70GTq1w2iiQqrT3M=
-github.com/Bidon15/sync-service v0.0.0-20220914145500-b71b55d44765/go.mod h1:Z1lGjIgyeyyWTO1AM886HW2ZQgWXAkTnYWbHc4fPvdQ=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/toml v0.4.1 h1:GaI7EiDXDRfa8VshkTj7Fym7ha+y8/XxIgD2okUIjLw=
 github.com/BurntSushi/toml v0.4.1/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
@@ -504,6 +502,8 @@ github.com/testground/plan-templates/templates v0.0.0-20200429051153-b24fdc73e40
 github.com/testground/sdk-go v0.2.4/go.mod h1:3ewI3dydDseP7eCO1MHGh+67simvbkcUnguPYssFqiA=
 github.com/testground/sdk-go v0.3.1-0.20211012114808-49c90fa75405 h1:POJQkeqOQDnNEMr4RsIYDi8EQCE2Q4Eh2Tw+DhNVY94=
 github.com/testground/sdk-go v0.3.1-0.20211012114808-49c90fa75405/go.mod h1:HsInXM/XsSAquixQBddQDJvLdxlwdZ5fmB5ulCGaLU0=
+github.com/testground/sync-service v0.1.0 h1:FmG5F426wyLufcFlBnV/qSDn0BvsqLCOm34wnAL0/Rg=
+github.com/testground/sync-service v0.1.0/go.mod h1:UxLxsGjkZPqY1TtlusUu8xO0CS97eQ2PfIVF5O9JETA=
 github.com/testground/testground v0.5.3/go.mod h1:o7jPX2o6B1HmK6UFvPfVcGypNjTZa4yUjfOVsQRtb5s=
 github.com/ugorji/go v1.1.7 h1:/68gy2h+1mWMrwZFeD1kQialdSzAb432dtpeJ42ovdo=
 github.com/ugorji/go v1.1.7/go.mod h1:kZn38zHttfInRq0xu/PH0az30d+z6vm202qpg1oXVMw=
