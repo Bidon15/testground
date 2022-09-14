@@ -52,13 +52,13 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: "bidon15/testground:edge"
+          tags: "${{ env.REGISTRY }}/bidon15/testground:edge"
           file: ./Dockerfile.testground
           platforms: linux/arm64,linux/amd64
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: "bidon15/sidecar:edge"
+          tags: "${{ env.REGISTRY }}/bidon15/sidecar:edge"
           file: ./Dockerfile.sidecar
           platforms: linux/arm64,linux/amd64
