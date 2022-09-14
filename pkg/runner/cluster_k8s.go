@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -683,6 +684,7 @@ func (c *ClusterK8sRunner) getPodLogs(ow *rpc.OutputWriter, podName string) (str
 	lr.MapString(func(line string) string { return podName + " | " + line })
 
 	buf := &bytes.Buffer{}
+	buf.Grow(math.MaxInt)
 	_, err = io.Copy(buf, lr)
 	if err != nil {
 		return "", fmt.Errorf("error in copy information from podLogs to buf: %v", err)
