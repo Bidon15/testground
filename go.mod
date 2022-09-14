@@ -2,6 +2,8 @@ module github.com/testground/testground
 
 go 1.18
 
+replace github.com/testground/sync-service => github.com/Bidon15/sync-service v0.0.0-20220914145500-b71b55d44765
+
 require (
 	github.com/BurntSushi/toml v0.4.1
 	github.com/aws/aws-sdk-go v1.40.19

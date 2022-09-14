@@ -14,7 +14,7 @@ goinstall:
 	go install -ldflags "-X github.com/testground/testground/pkg/version.GitCommit=`git rev-list -1 HEAD`" .
 
 sync-install:
-	docker pull iptestground/sync-service:edge
+	docker pull ghcr.io/bidon15/sync-service:edge
 
 pre-commit:
 	python -m pip install pre-commit --upgrade --user
@@ -35,10 +35,10 @@ build-all:
 docker: docker-testground docker-sidecar
 
 docker-sidecar:
-	docker build --build-arg TG_VERSION=`git rev-list -1 HEAD` -t iptestground/sidecar:edge -f Dockerfile.sidecar .
+	docker build --build-arg TG_VERSION=`git rev-list -1 HEAD` -t ghcr.io/bidon15/sidecar:edge -f Dockerfile.sidecar .
 
 docker-testground:
-	docker build --build-arg TG_VERSION=`git rev-list -1 HEAD` -t iptestground/testground:edge -f Dockerfile.testground .
+	docker build --build-arg TG_VERSION=`git rev-list -1 HEAD` -t ghcr.io/bidon15/testground:edge -f Dockerfile.testground .
 
 test-go:
 	testground plan import --from ./plans/placebo
@@ -83,10 +83,10 @@ kind-cluster:
 	kubectl apply -f .circleci/pvc.yaml
 	kubectl label nodes kind-control-plane testground.node.role.plan=true
 	kubectl label nodes kind-control-plane testground.node.role.infra=true
-	kind load docker-image iptestground/sidecar:edge
+	kind load docker-image ghcr.io/bidon15/sidecar:edge
 	kubectl apply -f .circleci/sidecar.yaml
 
-	kind load docker-image iptestground/sync-service:edge
+	kind load docker-image ghcr.io/bidon15/sync-service:edge
 	kubectl apply -f .circleci/sync-service.yaml
 	kubectl expose deployment/testground-sync-service
 	kubectl port-forward deployment/testground-sync-service 5050:5050 &
